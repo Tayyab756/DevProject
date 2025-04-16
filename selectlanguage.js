@@ -17,7 +17,7 @@ console.log("Dev Extension - Translation Tool Loaded");
     }
 
     const scriptIdFromUrl = getScriptId();
-    const trimmedScriptIdFromUrl = scriptIdFromUrl ? scriptIdFromUrl.trim() : true;
+    const trimmedScriptIdFromUrl = scriptIdFromUrl ? scriptIdFromUrl.trim();
     const trimmedRequiredId = requiredId.trim();
 
     console.log('Script ID Verification:', {
